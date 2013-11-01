@@ -1,360 +1,249 @@
-# Node
-crypto  = require "crypto"
-# Lib
-ju      = require "./utils"
+#
+# Enumeration of JOSE algorithm implementation requirements. Refers to the 
+# requirement levels defined in RFC 2119.
+#
+Requirement =
 
+  # The implementation of the algorithm is required
+  REQUIRED: "REQUIRED"
+
+  # The implementation of the algorithm is recommended
+  RECOMMENDED: "RECOMMENDED"
+
+  # The implementation of the algorithm is optional
+  OPTIONAL: "OPTIONAL"
 
 #
-# The following is based on [JSON Web Algorithms (JWA) v02](https://www.ietf.org/id/draft-ietf-jose-json-web-algorithms-02.txt):
+# Shared base class for Signing / Encryption algorithms
 #
-# The JSON Web Algorithms (JWA) specification enumerates cryptographic algorithms and identifiers to be used with the 
-# JSON Web Signature (JWS) [JWS] and JSON Web Encryption (JWE) [JWE] specifications.  Enumerating the algorithms and
-# identifiers for them in this specification, rather than in the JWS and JWE specifications, is intended to allow them
-# to remain unchanged in the face of changes in the set of required, recommended, optional, and deprecated algorithms
-# over time. This specification also describes the semantics and operations that are specific to these algorithms and 
-# algorithm families.
-#
-#   +--------------------+----------------------------------------------+
-#   | alg Parameter      | Digital Signature or MAC Algorithm           |
-#   | Value              |                                              |
-#   +--------------------+----------------------------------------------+
-#   | HS256              | HMAC using SHA-256 hash algorithm            |
-#   | HS384              | HMAC using SHA-384 hash algorithm            |
-#   | HS512              | HMAC using SHA-512 hash algorithm            |
-#   | RS256              | RSA using SHA-256 hash algorithm             |
-#   | RS384              | RSA using SHA-384 hash algorithm             |
-#   | RS512              | RSA using SHA-512 hash algorithm             |
-#   | ES256              | ECDSA using P-256 curve and SHA-256 hash     |
-#   |                    | algorithm                                    |
-#   | ES384              | ECDSA using P-384 curve and SHA-384 hash     |
-#   |                    | algorithm                                    |
-#   | ES512              | ECDSA using P-521 curve and SHA-512 hash     |
-#   |                    | algorithm                                    |
-#   | none               | No digital signature or MAC value included   |
-#   +--------------------+----------------------------------------------+
-#
-#  Of these algorithms, only HMAC SHA-256 and "none" MUST be implemented by conforming JWS implementations. 
-#  It is RECOMMENDED that implementations also support the RSA SHA-256 and ECDSA P-256 SHA-256 algorithms.  
-#  Support for other algorithms and key sizes is OPTIONAL.
-#
-jwa_table =
-  NONE :
-    TYPE : "SIGNATURE"
-    HASH_AL : {}
-  HMAC :
-    TYPE    : "SIGNATURE"
-    HASH_AL :
-      HS256 : "SHA256"
-      HS384 : "SHA384"
-      HS512 : "SHA512"
-  RSA :
-    TYPE    : "SIGNATURE"
-    HASH_AL :
-      RS256 : "RSA-SHA256"
-      RS384 : "RSA-SHA384"
-      RS512 : "RSA-SHA512"
-
-
-class JwaAlgorithm
-
-  type : () ->
-    jwa_table?[@alg]?.TYPE
-
-  hash : (alg) ->
-    jwa_table?[@alg]?.HASH_AL[alg]
-
+class Algorithm
+  constructor: (@name = "NONE", @requirement = Requirement.REQUIRED) ->
 
 #
-# To support use cases where the content is secured by a means other than a digital signature or MAC value, JWSs MAY also be created
-# without them.  These are called "Plaintext JWSs".  Plaintext JWSs MUST use the "alg" value "none", and are formatted identically to
-# other JWSs, but with an empty JWS Signature value.
+# Base class for Signing Algorithm
 #
-class NoneSigner extends JwaAlgorithm
+class JWSAlgorithm extends Algorithm
+  algorithms =
+    'NONE'  : new JWSAlgorithm("NONE", Requirement.REQUIRED)
 
-  alg : "NONE"
-
-  update: (data) ->
-    @
-
-  digest: () -> ""
-
-  sign: () -> @digest()
-
-
-NONE_SIGNER = new NoneSigner
-
-newNoneSigner = ( ) -> NONE_SIGNER
-
-class NoneVerifier extends JwaAlgorithm
-
-  alg : "NONE"
-
-  verify: (jwt_req) ->
-    jwt_header  = jwt_req?.header
-    jwt_claim   = jwt_req?.claim
-    jwt_enc_sig = jwt_req?.segments?[2]
-
-    return false unless jwt_header.alg == "none"
-    return false if     jwt_enc_sig
-    true
-
-newNoneVerifier = () -> new NoneVerifier
-
-
-
-# Provides the HMAC implementation of the **HS256**, **HS384** and **HS512** algorithms.
-# Cryptographic algorithms are provided by **Node's** [Crypto library](http://nodejs.org/api/crypto.html)
-#
-# As mentioned in the specification the HMAC (Hash-based Message Authentication Codes) enable the usage
-# of a *known secret*, this can be used to demonstrate that the MAC matches the hashed content, 
-# in this case the JWS Secured Input, which therefore demonstrates that whoever generated the MAC was in
-# possession of the secret. 
-#
-# To review the specifics of the algorithms please review chapter
-# "3.2.  MAC with HMAC SHA-256, HMAC SHA-384, or HMAC SHA-512" of
-# the [Specification](https://www.ietf.org/id/draft-ietf-jose-json-web-algorithms-02.txt).
-#
-class HMACSigner extends JwaAlgorithm
-
-  alg : "HMAC"
-
-  #
-  # Creates and returns an HMAC object, a cryptographic HMAC binded to the given algorithm and key.
-  # The supported algorithm is dependent on the available algorithms in *OpenSSL* - to get the list
-  # type `openssl list-message-digest-algorithms` in the terminal. If you provide an algorithm that is
-  # not supported an error will be thrown.
-  #
-  constructor: (alg = "HS256" , @key) ->
-    throw Error "A defined algorithm is required." unless alg
-
-    @osslAlg = @hash(alg.toUpperCase())
-    throw Error "Algorithm #{@alg} is not supported by HMAC." unless @osslAlg
-
-    try
-      @hmac = crypto.createHmac @osslAlg, @key
-    catch error
-      throw new Error "HMAC does not support algorithm #{@alg} => #{@osslAlg}! #{error}"
-
-  update: (data) ->
-    throw new Error "There is no reference to the hmac object!" unless @hmac
-    @hmac.update data
-    @
-
-  digest: (encoding = "base64") ->
-    throw new Error "There is no reference to the hmac object!" unless @hmac
-    ju.base64urlEscape( @hmac.digest(encoding) )
-
-  sign: (encoding) -> @digest(encoding)
-
-
-# Factory to create *HMAC Algorithm* instances
-newHMACSigner = (alg, key) ->
-  new HMACSigner(alg, key)
-
-# Todo: Move to JWS
-class HMACVerifier extends JwaAlgorithm
-
-  alg: "HMAC"
-
-  verify: (jwt_req, key) ->
-    throw new Error "jwt request not specified" unless jwt_req
-    throw new Error "key not specified" unless key
-
-    _typ     = jwt_req?.header?.typ
-    _alg     = jwt_req?.header?.alg
-    _claim   = jwt_req?.claim
-    _enc_sig = jwt_req?.segments?[2]
-
-    # is the header a jwt header?
-    return false unless _typ == "JWT"
-    # is the algorithm supported/available for hmac ?
-    throw new Error "Hash #{_alg} is not supported!" unless @hash( _alg)
-    # do we have an encoded signature?
-    return false unless _enc_sig
-    # do we have the implementation of such hmac algorithm?
-    algImpl = jwa_provider(_alg)
-    return false unless algImpl
-    # set the signer
-    signer = algImpl key
-    # if so we proceed to sign the segments that belong to the header and the claim
-    signer.update "#{jwt_req.segments?[0]}.#{jwt_req.segments?[1]}"
-    # get signed value form the JWT
-    _actual_sign = signer.sign()
-    #compare
-    _actual_sign == _enc_sig
-
-# Todo: Move to JWS
-newHMACVerifier = () -> new HMACVerifier
-
-#  
-#  Implementation of digital signature with RSA SHA-256, RSA SHA-384, or RSA SHA-512
-#
-#  To review the specifics of the algorithms please review chapter
-#  "3.3.  Digital Signature with RSA SHA-256, RSA SHA-384, or RSA SHA-512" of
-#  the [Specification](https://www.ietf.org/id/draft-ietf-jose-json-web-algorithms-02.txt).
-#  
-#  Important elements to understand are.
-#  * RSASSA-PKCS1-v1_5 digital signature algorithm (commonly known as PKCS#1), 
-#  using SHA-256, SHA-384, or SHA-512 as the hash function. 
-#  
-#  The *"alg"* (algorithm) header parameter values used in the JWS Header to indicate that 
-#  the *Encoded JWS Signature* contains a **base64url** encoded **RSA digital signature* using the
-#  respective hash function are:
-#  * "RS256"
-#  * "RS384"
-#  * "RS512" 
-#
-#  **A key of size 2048 bits or larger MUST be used with these algorithms.**
-#
-#
-class RSSigner extends JwaAlgorithm
-
-  alg : "RSA"
-
-  _assertSigner : () ->
-    throw Error "Signer is not defined!" unless @signer
-
-  constructor: (alg = "RSA-SHA256", @key_PEM) ->
-    throw Error "A defined algorithm is required." unless alg
+    # HMAC using SHA-256 hash algorithm (required).
+    'HS256' : new JWSAlgorithm("HS256", Requirement.REQUIRED)
     
-    @osslAlg = @hash( alg.toUpperCase() )
-    new Error "Algorithm #{alg} is not supported by the specification." unless @osslAlg
-
-    try
-      @signer = crypto.createSign(@osslAlg)
-    catch error
-      throw new Error "Unable to create a signer with algorithm #{@osslAlg}!"
-  
-  update: (data) ->
-    @_assertSigner()
-    @signer.update data
-    @
-
-  sign: (format = "base64") ->
-    @_assertSigner()
-    _signed = @signer.sign(@key_PEM, format)
-    _enc_sign = ju.base64urlEscape _signed
-    _enc_sign
-
-newRSSigner = (alg, key_PEM) -> new RSSigner( alg, key_PEM )
-
-
-# TODO move verifier to JWS
-#  
-#  Implementation of verification of a RSA SHA-256, RSA SHA-384, or RSA SHA-512 signature.
-#
-#  To review the specifics of the algorithms please review chapter
-#  "3.3.  Digital Signature with RSA SHA-256, RSA SHA-384, or RSA SHA-512" of
-#  the [Specification](https://www.ietf.org/id/draft-ietf-jose-json-web-algorithms-02.txt).
-#  
-#  The *Encoded JWS Signature* contains a **base64url** encoded **RSA digital signature*. The
-#  following hash functions are available.
-#  
-#  Per specification the validation should be implemented as follows:
-#
-#   o.  Take the Encoded JWS Signature and base64url decode it into a
-#       byte array.  If decoding fails, the JWS MUST be rejected.
-#
-#   0.  Submit the bytes of the UTF-8 representation of the JWS Secured
-#       Input (which is the same as the ASCII representation) and the
-#       public key corresponding to the private key used by the signer to
-#       the RSASSA-PKCS1-V1_5-VERIFY algorithm using the corresponding SHA hash function (e.g. SHA-256).
-#
-#   0.  If the validation fails, the JWS MUST be rejected.
-#
-#
-class RSVerifier extends JwaAlgorithm
-
-  alg : "RSA"
-  
-  _createVerifier = (alg) ->
-    try
-      crypto.createVerify(alg)
-    catch error
-      throw new Error "Unable to create a verifier with algorithm #{alg}! #{error}"
-  
-  verify: (jwt_req, public_key) ->
-    throw new Error "jwt request not specified" unless jwt_req
-    throw new Error "public_key not specified" unless public_key
-
-    _typ     = jwt_req?.header?.typ
-    _alg     = jwt_req?.header?.alg
-    _claim   = jwt_req?.claim
-    _enc_sig = jwt_req?.segments?[2]
-
-    # is the header a jwt header?
-    return false unless _typ == "JWT"
-    # do we have an encoded signature?
-    return false unless _enc_sig
-    # is the algorithm supported/available for RSA ?
-    openSSL = @hash(_alg)
-    throw new Error "Hash #{_alg} is not supported for this JWA #{@type}" unless openSSL
-    # can we create a verifier for the implementation of such algorithm?
-    _verifier = _createVerifier openSSL
-    return false unless _verifier
-    # update the verifier with the that used to generate the key
-    _verifier.update "#{jwt_req.segments[0]}.#{jwt_req.segments[1]}"
-    # we un-encode the encoded signature
-    _sig = ju.base64urlUnescape _enc_sig
-    # finally we verify
-    _verifier.verify public_key, _sig, "base64"
-
-newRSVerifier = () -> new RSVerifier
-
-
-#
-# TODO: Implement 
-#       3.4.  Digital Signature with ECDSA P-256 SHA-256, ECDSA P-384 SHA-384,
-#             or ECDSA P-521 SHA-512
-
-
-#
-# Returns a function that holds an *Encryption Algorithm*, or `undefined` if the algorithm is not supported or not found. 
-#
-#   +--------------------+----------------------------------------------+
-#   | alg Parameter      | Digital Signature or MAC Algorithm           |
-#   | Value              |                                              |
-#   +--------------------+----------------------------------------------+
-#   | HS256              | HMAC using SHA-256 hash algorithm            |
-#   | HS384              | HMAC using SHA-384 hash algorithm            |
-#   | HS512              | HMAC using SHA-512 hash algorithm            |
-#   | RS256              | RSA using SHA-256 hash algorithm             |
-#   | RS384              | RSA using SHA-384 hash algorithm             |
-#   | RS512              | RSA using SHA-512 hash algorithm             |
-#   | ES256              | ECDSA using P-256 curve and SHA-256 hash     |
-#   |                    | algorithm                                    |
-#   | ES384              | ECDSA using P-384 curve and SHA-384 hash     |
-#   |                    | algorithm                                    |
-#   | ES512              | ECDSA using P-521 curve and SHA-512 hash     |
-#   |                    | algorithm                                    |
-#   | none               | No digital signature or MAC value included   |
-#   +--------------------+----------------------------------------------+
-#
-module.exports.provider = jwa_provider = (code) ->
-  switch code
-    when "none" then () => newNoneSigner()
+    # HMAC using SHA-384 hash algorithm (optional).
+    'HS384' : new JWSAlgorithm("HS384", Requirement.OPTIONAL)
     
-    when "HS256", "HS384", "HS512" then (key) => newHMACSigner code, key
+    # HMAC using SHA-512 hash algorithm (optional).
+    'HS512' : new JWSAlgorithm("HS512", Requirement.OPTIONAL)
     
-    when "RS256", "RS384", "RS512" then (key) => newRSSigner code, key
+    # RSASSA-PKCS-v1_5 using SHA-256 hash algorithm (recommended).
+    'RS256' : new JWSAlgorithm("RS256", Requirement.RECOMMENDED)
     
-    when "ES256", "ES384", "ES512" then undefined #throw new Error "ECDSA not yet implemented."
-
-    else undefined #throw new Error "There is no JWA Provider for #{code}!"
+    # RSASSA-PKCS-v1_5 using SHA-384 hash algorithm (optional).
+    'RS384' : new JWSAlgorithm("RS384", Requirement.OPTIONAL)
+    
+    # RSASSA-PKCS-v1_5 using SHA-512 hash algorithm (optional).
+    'RS512' : new JWSAlgorithm("RS512", Requirement.OPTIONAL)
+    
+    # ECDSA using P-256 curve and SHA-256 hash algorithm (recommended).
+    'ES256' : new JWSAlgorithm("ES256", Requirement.RECOMMENDED)
+    
+    # ECDSA using P-384 curve and SHA-384 hash algorithm (optional).
+    'ES384' : new JWSAlgorithm("ES384", Requirement.OPTIONAL)
+    
+    # ECDSA using P-521 curve and SHA-512 hash algorithm (optional).
+    'ES512' : new JWSAlgorithm("ES512", Requirement.OPTIONAL)
+    
+    # RSASSA-PSS using SHA-256 hash algorithm and MGF1 mask generation function with SHA-256 (optional).
+    'PS256' : new JWSAlgorithm("PS256", Requirement.OPTIONAL)
+    
+    # RSASSA-PSS using SHA-384 hash algorithm and MGF1 mask generation function with SHA-384 (optional).
+    'PS384' : new JWSAlgorithm("PS384", Requirement.OPTIONAL)
+    
+    # RSASSA-PSS using SHA-512 hash algorithm and MGF1 mask generation function with SHA-512 (optional).
+    'PS512' : new JWSAlgorithm("PS512", Requirement.OPTIONAL)
+ 
+  @parse: (alg) ->
+    return algorithms[alg] if algorithms[alg]?
+    return null
 
 #
-# Provides
+# Base class for JWS Signing provider
 #
-module.exports.verifier = jwa_verifier = (code) ->
-  switch code
-    when "none" then newNoneVerifier()
-    
-    when "HS256", "HS384", "HS512" then newHMACVerifier()
-    
-    when "RS256", "RS384", "RS512" then newRSVerifier()
-    
-    when "ES256", "ES384", "ES512" then undefined #throw new Error "ECDSA not yet implemented."
+class JWSAlgorithmProvider 
+  supportedAlgorithms: () ->
+    throw new Error("Must be implemented by inheritance.")
 
-    else undefined #throw new Error "There is no JWA Provider for #{code}!"
+#
+# Base class for Signer
+# 
+class JWSSigner extends JWSAlgorithmProvider
+  sign: (header, content) ->
+    throw new Error("Must be implemented by inheritance.")
+
+#
+# Base class for Verifier
+# 
+class JWSVerifier extends JWSAlgorithmProvider
+  verify: (header, content, givenSignature) ->
+    throw new Error("Must be implemented by inheritance.")
+
+#
+# Base class for Encryption Algorithm
+#
+class JWEAlgorithm extends Algorithm
+  algorithms =
+    'NONE'  : new JWEAlgorithm("NONE", Requirement.REQUIRED)
+    
+    # RSAES-PKCS1-V1_5 (RFC 3447) (required).
+    'RSA1_5'  : new JWEAlgorithm("RSA1_5", Requirement.REQUIRED)
+    
+    # RSAES using Optimal Assymetric Encryption Padding (OAEP) (RFC 3447),
+    # with the default parameters specified by RFC 3447 in section A.2.1
+    # (recommended).
+    'RSA-OAEP': new JWEAlgorithm("RSA-OAEP", Requirement.RECOMMENDED)
+
+    # Advanced Encryption Standard (AES) Key Wrap Algorithm (RFC 3394) 
+    # using 128 bit keys (recommended).
+    'A128KW'  : new JWEAlgorithm("A128KW", Requirement.RECOMMENDED)
+
+    # Advanced Encryption Standard (AES) Key Wrap Algorithm (RFC 3394)
+    # using 192 bit keys (optional).
+    'A192KW'  : new JWEAlgorithm("A192KW", Requirement.OPTIONAL)
+    
+    # Advanced Encryption Standard (AES) Key Wrap Algorithm (RFC 3394) 
+    # using 256 bit keys (recommended).
+    'A256KW'  : new JWEAlgorithm("A256KW", Requirement.RECOMMENDED)
+
+    # Direct use of a shared symmetric key as the Content Encryption Key 
+    # (CEK) for the block encryption step (rather than using the symmetric
+    # key to wrap the CEK) (recommended).
+    'DIR'     : new JWEAlgorithm("DIR", Requirement.RECOMMENDED)
+
+    # Elliptic Curve Diffie-Hellman Ephemeral Static (RFC 6090) key 
+    # agreement using the Concat KDF, as defined in section 5.8.1 of
+    # NIST.800-56A, with the agreed-upon key being used directly as the 
+    # Content Encryption Key (CEK) (rather than being used to wrap the 
+    # CEK) (recommended).
+    'ECDH_ES' : new JWEAlgorithm("ECDH_ES", Requirement.RECOMMENDED)
+
+    # Elliptic Curve Diffie-Hellman Ephemeral Static key agreement per
+    # "ECDH-ES", but where the agreed-upon key is used to wrap the Content
+    # Encryption Key (CEK) with the "A128KW" function (rather than being 
+    # used directly as the CEK) (recommended).
+    'ECDH_ES_A128KW': new JWEAlgorithm("ECDH_ES+A128KW", Requirement.RECOMMENDED)
+
+    # Elliptic Curve Diffie-Hellman Ephemeral Static key agreement per
+    # "ECDH-ES", but where the agreed-upon key is used to wrap the Content
+    # Encryption Key (CEK) with the "A192KW" function (rather than being 
+    # used directly as the CEK) (optional).
+    'ECDH_ES_A192KW': new JWEAlgorithm("ECDH_ES+A192KW", Requirement.OPTIONAL)
+
+    # Elliptic Curve Diffie-Hellman Ephemeral Static key agreement per
+    # "ECDH-ES", but where the agreed-upon key is used to wrap the Content
+    # Encryption Key (CEK) with the "A256KW" function (rather than being 
+    # used directly as the CEK) (recommended).   
+    'ECDH_ES_A256KW': new JWEAlgorithm("ECDH_ES+A256KW", Requirement.RECOMMENDED)
+
+    # AES in Galois/Counter Mode (GCM) (NIST.800-38D) 128 bit keys
+    # (optional).
+    'A128GCMKW' : new JWEAlgorithm("A128GCMKW", Requirement.OPTIONAL)
+
+    # AES in Galois/Counter Mode (GCM) (NIST.800-38D) 192 bit keys
+    # (optional).
+    'A192GCMKW' : new JWEAlgorithm("A192GCMKW", Requirement.OPTIONAL)
+    
+    # AES in Galois/Counter Mode (GCM) (NIST.800-38D) 256 bit keys
+    # (optional).
+    'A256GCMKW' : new JWEAlgorithm("A256GCMKW", Requirement.OPTIONAL)
+
+    # PBES2 (RFC 2898) with HMAC SHA-256 as the PRF and AES Key Wrap
+    # (RFC 3394) using 128 bit keys for the encryption scheme (optional).
+    'PBES2_HS256_A128KW': new JWEAlgorithm("PBES2-HS256+A128KW", Requirement.OPTIONAL)
+
+    # PBES2 (RFC 2898) with HMAC SHA-256 as the PRF and AES Key Wrap
+    # (RFC 3394) using 192 bit keys for the encryption scheme (optional).
+    'PBES2_HS256_A192KW': new JWEAlgorithm("PBES2-HS256+A192KW", Requirement.OPTIONAL)
+
+    # PBES2 (RFC 2898) with HMAC SHA-256 as the PRF and AES Key Wrap
+    # (RFC 3394) using 256 bit keys for the encryption scheme (optional).
+    'PBES2_HS256_A256KW': new JWEAlgorithm("PBES2-HS256+A256KW", Requirement.OPTIONAL)
+
+  @parse: (alg) ->
+    return algorithms[alg] if algorithms[alg]?
+    return null
+
+class EncryptionMethod extends Algorithm
+  algorithms =
+    'NONE' : new EncryptionMethod("NONE", Requirement.REQUIRED, 0)
+
+    # AES_128_CBC_HMAC_SHA_256 authenticated encryption using a 128 bit
+    # key (required).
+    'A128CBC-HS256': new EncryptionMethod("A128CBC-HS256", Requirement.REQUIRED, 256)
+
+    # AES_192_CBC_HMAC_SHA_384 authenticated encryption using a 384 bit
+    # key (optional).
+    'A192CBC-HS384': new EncryptionMethod("A192CBC-HS384", Requirement.OPTIONAL, 384)
+
+    # AES_256_CBC_HMAC_SHA_512 authenticated encryption using a 512 bit
+    # key (required).
+    'A256CBC-HS512': new EncryptionMethod("A256CBC-HS512", Requirement.REQUIRED, 512)
+
+    # AES in Galois/Counter Mode (GCM) (NIST.800-38D) using a 128 bit key 
+    # (recommended).
+    'A128GCM': new EncryptionMethod("A128GCM", Requirement.RECOMMENDED, 128)
+
+    # AES in Galois/Counter Mode (GCM) (NIST.800-38D) using a 192 bit key 
+    # (recommended).
+    'A192GCM': new EncryptionMethod("A192GCM", Requirement.OPTIONAL, 192)
+
+    # AES in Galois/Counter Mode (GCM) (NIST.800-38D) using a 256 bit key 
+    # (recommended).
+    'A256GCM': new EncryptionMethod("A256GCM", Requirement.OPTIONAL, 256)
+
+  constructor: (@name, @requirement, @cekBitLength) ->
+    super(@name, @requirement)
+
+  @parse: (alg) ->
+    return algorithms[alg] if algorithms[alg]?
+    return null
+
+#
+# Base interface for Algorithm Provider
+#
+class JWEAlgorithmProvider
+  supportedAlgorithms: ->
+    throw new Error("Must be implemented by inheritance.")
+
+  supportedEncryptionMethods: ->
+    throw new Error("Must be implemented by inheritance.")
+
+#
+# Base interface for Decrypter
+#
+class JWEDecrypter extends JWEAlgorithmProvider
+  decrypt: (header, encryptedKey, iv, cipherText, authTag) -> 
+    throw new Error("Must be implemented by inheritance.")
+
+#
+# Base interface for Encrypter 
+#
+class JWEEncrypter extends JWEAlgorithmProvider
+  encrypt: (header, clearText) ->
+    throw new Error("Must be implemented by inheritance.")
+
+##// -- exports
+module.exports = 
+  spec_version: "draft-ietf-jose-json-web-algorithms-17"
+  Requirement: Requirement
+  JWSAlgorithm: JWSAlgorithm
+  JWSAlgorithmProvider: JWSAlgorithmProvider
+  JWSSigner: JWSSigner
+  JWSVerifier: JWSVerifier
+  JWEAlgorithm: JWEAlgorithm
+  JWEAlgorithmProvider: JWEAlgorithmProvider
+  JWEEncrypter: JWEEncrypter
+  JWEDecrypter:  JWEDecrypter
+  EncryptionMethod: EncryptionMethod
+
 
 
