@@ -14,19 +14,18 @@ jws     = require '../jws'
 #
 class CryptoMacProvider extends jws.BaseJWSProvider
   
+  algoMap =
+    'HS256': "sha256"
+    'HS384': "sha384"
+    'HS512': "sha512"
+
   getAlgorithmName: (alg) ->
-    return "sha256" if alg == 'HS256'
-    return "sha384" if alg == 'HS384'
-    return "sha512" if alg == 'HS512'
-    throw new Error "Unsupported HMAC algorithm, must be HS256, HS384 or HS512"
+    throw new Error "Unsupported HMAC algorithm, must be HS256, HS384 or HS512" unless algoMap[alg]?
+    return algoMap[alg]
 
   constructor: (@sharedSecret) ->
     throw new Error "The shared secret must not be null" unless @sharedSecret?
-    algs = []
-    algs.push jwa.JWSAlgorithm.parse('HS256')
-    algs.push jwa.JWSAlgorithm.parse('HS384')
-    algs.push jwa.JWSAlgorithm.parse('HS512')
-    super(algs)
+    super(Object.keys(algoMap))
 
 class CryptoMacSigner extends jwa.JWSSigner
 
